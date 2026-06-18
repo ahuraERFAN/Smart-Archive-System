@@ -1,0 +1,5 @@
+Get-ChildItem -Recurse -Filter *.py | ForEach-Object {
+"===== $($_.FullName) ====="
+Get-Content $_.FullName
+"`n"
+} | Out-File project_dump.txt -Encoding utf8

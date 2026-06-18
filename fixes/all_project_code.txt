@@ -1,0 +1,2065 @@
+
+
+# ==========================================
+# FILE: check_users_table.py
+# ==========================================
+
+# for testing database records
+import sqlite3
+
+conn = sqlite3.connect("database/archive.db")
+c = conn.cursor()
+
+c.execute("PRAGMA table_info(users)")
+columns = c.fetchall()
+
+for col in columns:
+    print(col)
+
+conn.close()
+
+
+# ==========================================
+# FILE: create_admin.py
+# ==========================================
+
+from utils.security import hash_password
+from database.db import get_connection
+
+
+def create_admin():
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    username = "admin"
+    password = "1234"
+
+    hashed = hash_password(password)
+
+    cursor.execute("""
+    INSERT INTO users (full_name, national_id, username, password_hash, role)
+    VALUES (?, ?, ?, ?, ?)
+    """, ("Admin", "0000000000", username, hashed, "manager"))
+
+    conn.commit()
+    conn.close()
+
+    print("Admin created")
+
+
+if __name__ == "__main__":
+    create_admin()
+
+
+# ==========================================
+# FILE: create_test_users.py
+# ==========================================
+
+from utils.security import hash_password
+from database.db import get_connection
+
+def create_test_users():
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    users_to_create = [
+        ("کارمند تست", "1111111111", "staff_test", "1234", "staff"),
+        ("کاربر تست", "2222222222", "user_test", "1234", "user")
+    ]
+
+    for full_name, national_id, username, password, role in users_to_create:
+        # بررسی اینکه آیا کاربر از قبل وجود دارد
+        cursor.execute("SELECT id FROM users WHERE username = ?", (username,))
+        if cursor.fetchone():
+            print(f"[-] کاربر {username} از قبل وجود دارد.")
+            continue
+            
+        hashed = hash_password(password)
+        cursor.execute("""
+        INSERT INTO users (full_name, national_id, username, password_hash, role)
+        VALUES (?, ?, ?, ?, ?)
+        """, (full_name, national_id, username, hashed, role))
+        print(f"[+] کاربر {username} با نقش {role} ساخته شد.")
+
+    conn.commit()
+    conn.close()
+
+if __name__ == "__main__":
+    create_test_users()
+
+
+# ==========================================
+# FILE: main.py
+# ==========================================
+
+import sys
+
+from PyQt5.QtWidgets import QApplication
+
+from auth.login import LoginWindow
+from database.db import init_db
+
+
+def main():
+
+    # ساخت دیتابیس
+    init_db()
+
+    app = QApplication(sys.argv)
+
+    login_window = LoginWindow()
+    login_window.show()
+
+    sys.exit(app.exec_())
+
+
+if __name__ == "__main__":
+    main()
+
+
+# ==========================================
+# FILE: reset_admin.py
+# ==========================================
+
+import sqlite3
+from utils.security import hash_password
+
+conn = sqlite3.connect("database/archive.db")
+c = conn.cursor()
+
+new_hash = hash_password("1234")
+
+c.execute("""
+UPDATE users
+SET password_hash = ?
+WHERE username = 'admin'
+""", (new_hash,))
+
+conn.commit()
+conn.close()
+
+print("Admin password reset successfully.")
+
+
+# ==========================================
+# FILE: show_admin.py
+# ==========================================
+
+import sqlite3
+
+conn = sqlite3.connect("database/archive.db")
+c = conn.cursor()
+
+c.execute("SELECT id, username, password_hash, role FROM users")
+rows = c.fetchall()
+
+for r in rows:
+    print(r)
+
+conn.close()
+
+
+# ==========================================
+# FILE: auth\auth_utils.py
+# ==========================================
+
+# auth/auth_utils.py
+
+from utils.security import verify_password
+from database.db import get_connection
+
+
+def authenticate_user(username: str, password: str):
+    """
+    بررسی نام کاربری و رمز عبور
+    در صورت موفقیت:
+        (True, "ورود موفق", user_dict)
+    در غیر این صورت:
+        (False, "پیام خطا", None)
+    """
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT id, full_name, username, password_hash, role
+        FROM users
+        WHERE username = ?
+    """, (username,))
+
+    row = cursor.fetchone()
+    conn.close()
+
+    if row is None:
+        return False, "کاربری با این نام کاربری وجود ندارد", None
+
+    user_id, full_name, db_username, db_password_hash, role = row
+
+    # بررسی رمز عبور
+    if not verify_password(password, db_password_hash):
+        return False, "رمز عبور اشتباه است", None
+
+    # اطلاعات کاربر لاگین‌شده
+    user_data = {
+        "id": user_id,
+        "full_name": full_name,
+        "username": db_username,
+        "role": role
+    }
+
+    return True, "ورود موفق", user_data
+
+
+# ==========================================
+# FILE: auth\login.py
+# ==========================================
+
+# auth/login.py
+
+from PyQt5.QtWidgets import QWidget, QLabel, QLineEdit, QPushButton, QMessageBox
+from PyQt5.QtCore import Qt
+
+from auth.auth_utils import authenticate_user
+from user_panel.dashboard import UserDashboard
+from staff_panel.dashboard import StaffDashboard
+from manager_panel.dashboard import ManagerDashboard
+
+
+class LoginWindow(QWidget):
+
+    def __init__(self):
+        super().__init__()
+
+        self.setWindowTitle("Smart Archive Login")
+        self.setFixedSize(420, 520)
+
+        self.dashboard = None  # جلوگیری از بسته شدن پنجره داشبورد
+
+        self.setup_ui()
+        self.apply_styles()
+
+    def setup_ui(self):
+
+        self.lbl_title = QLabel("SMART ARCHIVE", self)
+        self.lbl_title.setGeometry(110, 60, 250, 50)
+        self.lbl_title.setAlignment(Qt.AlignCenter)
+
+        self.lbl_sub = QLabel("خوش آمدید، لطفاً وارد شوید", self)
+        self.lbl_sub.setGeometry(110, 110, 250, 30)
+        self.lbl_sub.setAlignment(Qt.AlignCenter)
+
+        self.username_input = QLineEdit(self)
+        self.username_input.setGeometry(50, 180, 320, 45)
+        self.username_input.setPlaceholderText("نام کاربری")
+
+        self.password_input = QLineEdit(self)
+        self.password_input.setGeometry(50, 240, 320, 45)
+        self.password_input.setPlaceholderText("رمز عبور")
+        self.password_input.setEchoMode(QLineEdit.Password)
+
+        self.login_btn = QPushButton("ورود به پنل", self)
+        self.login_btn.setGeometry(50, 310, 320, 50)
+        self.login_btn.clicked.connect(self.handle_login)
+
+        self.error_label = QLabel("", self)
+        self.error_label.setGeometry(50, 370, 320, 40)
+        self.error_label.setAlignment(Qt.AlignCenter)
+
+    def apply_styles(self):
+
+        self.setStyleSheet("""
+            QWidget {
+                background-color: #0d0f1a;
+                color: #E6E6E6;
+                font-family: IRANSans;
+            }
+
+            QLabel {
+                font-size: 16px;
+            }
+
+            QLineEdit {
+                background-color: #141824;
+                border-radius: 10px;
+                padding: 10px;
+                border: 1px solid #1e2230;
+                color: white;
+            }
+
+            QPushButton {
+                background-color: #00bfff;
+                border-radius: 10px;
+                font-size: 16px;
+                padding: 8px;
+            }
+
+            QPushButton:hover {
+                background-color: #14c8ff;
+            }
+        """)
+
+    def handle_login(self):
+
+        username = self.username_input.text().strip()
+        password = self.password_input.text().strip()
+
+        if not username or not password:
+            self.error_label.setText("هر دو فیلد الزامی هستند")
+            return
+
+        ok, msg, user = authenticate_user(username, password)
+
+        if not ok:
+            self.error_label.setText(msg)
+            return
+
+        self.error_label.setText("")
+        self.open_dashboard(user)
+
+    def open_dashboard(self, user_data):
+
+        role = user_data["role"]
+
+        if role == "user":
+            self.dashboard = UserDashboard(user_data)
+
+        elif role == "staff":
+            self.dashboard = StaffDashboard(user_data)
+
+        elif role == "manager":
+            self.dashboard = ManagerDashboard(user_data)
+
+        else:
+            QMessageBox.warning(self, "خطا", "نقش کاربر نامعتبر است")
+            return
+
+        self.dashboard.show()
+        self.close()
+
+
+# ==========================================
+# FILE: auth\register.py
+# ==========================================
+
+from utils.security import hash_password
+from database.db import get_connection
+
+def register_user(full_name, national_id, username, password, role="user"):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM users WHERE username = ?", (username,))
+    existing_user = cursor.fetchone()
+    
+    if existing_user:
+        conn.close()
+        return False, "این نام کاربری قبلاً ثبت شده است."
+        
+    password_hash = hash_password(password)
+    cursor.execute("""
+        INSERT INTO users (full_name, national_id, username, password_hash, role)
+        VALUES (?, ?, ?, ?, ?)
+    """, (full_name, national_id, username, password_hash, role))
+    conn.commit()
+    conn.close()
+    return True, "ثبت‌نام با موفقیت انجام شد."
+
+
+# ==========================================
+# FILE: database\db.py
+# ==========================================
+
+import sqlite3
+from pathlib import Path
+import os
+
+# پیدا کردن مسیر اصلی پروژه به صورت خودکار
+BASE_DIR = Path(os.path.abspath(os.path.dirname(__file__))).parent
+DB_DIR = BASE_DIR / "database"
+DB_PATH = DB_DIR / "archive.db"
+
+def get_connection():
+    # اطمینان از وجود پوشه database
+    os.makedirs(DB_DIR, exist_ok=True)
+    
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def init_db():
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    # USERS
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        full_name TEXT NOT NULL,
+        national_id TEXT UNIQUE,
+        username TEXT UNIQUE NOT NULL,
+        password_hash TEXT NOT NULL,
+        role TEXT NOT NULL DEFAULT 'user',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+
+    # DOCUMENTS
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS documents (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        title TEXT,
+        description TEXT,
+        file_path TEXT,
+        scan_path TEXT,
+        ocr_text TEXT,
+        extracted_json TEXT,
+        signature_path TEXT,
+        status TEXT DEFAULT 'pending',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(id)
+    )
+    """)
+
+    # TICKETS
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS tickets (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        document_id INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        staff_id INTEGER,
+        message TEXT NOT NULL,
+        response TEXT,
+        status TEXT DEFAULT 'open',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (document_id) REFERENCES documents(id),
+        FOREIGN KEY (user_id) REFERENCES users(id),
+        FOREIGN KEY (staff_id) REFERENCES users(id)
+    )
+    """)
+
+    # ARCHIVE KEYS
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS archive_keys (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        key_code TEXT UNIQUE,
+        description TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+
+    conn.commit()
+    conn.close()
+
+if __name__ == "__main__":
+    init_db()
+
+
+# ==========================================
+# FILE: manager_panel\analytics.py
+# ==========================================
+
+
+
+# ==========================================
+# FILE: manager_panel\dashboard.py
+# ==========================================
+
+from PyQt5.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout,
+    QPushButton, QLabel, QFrame
+)
+from PyQt5.QtCore import Qt
+
+from manager_panel.stats_widget import StatsWidget
+from manager_panel.user_management import UserManagementWidget
+
+
+class ManagerDashboard(QWidget):
+
+    def __init__(self, user_data):
+        super().__init__()
+
+        self.user_data = user_data
+        self.setWindowTitle("داشبورد مدیر")
+        self.setMinimumSize(1100, 650)
+
+        self.init_ui()
+
+    def init_ui(self):
+
+        main_layout = QHBoxLayout(self)
+
+        # ================= Sidebar =================
+        self.sidebar = QFrame()
+        self.sidebar.setFixedWidth(220)
+        self.sidebar.setStyleSheet("background-color:#0d0f1a;")
+
+        sidebar_layout = QVBoxLayout(self.sidebar)
+
+        lbl_title = QLabel("SMART ARCHIVE")
+        lbl_title.setAlignment(Qt.AlignCenter)
+        lbl_title.setStyleSheet("color:#00bfff; font-size:18px;")
+
+        btn_dashboard = QPushButton("📊 داشبورد")
+        btn_users = QPushButton("👥 مدیریت کاربران")
+        btn_logout = QPushButton("🚪 خروج")
+
+        for btn in [btn_dashboard, btn_users, btn_logout]:
+            btn.setFixedHeight(45)
+            btn.setStyleSheet("""
+                QPushButton {
+                    background:#141824;
+                    color:white;
+                    border:none;
+                    border-radius:8px;
+                }
+                QPushButton:hover {
+                    background:#1f2436;
+                }
+            """)
+
+        sidebar_layout.addWidget(lbl_title)
+        sidebar_layout.addSpacing(20)
+        sidebar_layout.addWidget(btn_dashboard)
+        sidebar_layout.addWidget(btn_users)
+        sidebar_layout.addStretch()
+        sidebar_layout.addWidget(btn_logout)
+
+        # ================= Content =================
+        self.content = QFrame()
+        self.content_layout = QVBoxLayout(self.content)
+
+        self.stats_widget = StatsWidget()
+        self.user_management = UserManagementWidget()
+
+        self.content_layout.addWidget(self.stats_widget)
+
+        # Signals
+        btn_dashboard.clicked.connect(self.show_dashboard)
+        btn_users.clicked.connect(self.show_users)
+        btn_logout.clicked.connect(self.close)
+
+        main_layout.addWidget(self.sidebar)
+        main_layout.addWidget(self.content)
+
+    def clear_content(self):
+        while self.content_layout.count():
+            item = self.content_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+    def show_dashboard(self):
+        self.clear_content()
+        # ساخت مجدد ویجت داشبورد
+        self.stats_widget = StatsWidget() 
+        self.content_layout.addWidget(self.stats_widget)
+
+    def show_users(self):
+        self.clear_content()
+        # ساخت مجدد ویجت مدیریت کاربران
+        self.user_management = UserManagementWidget() 
+        self.content_layout.addWidget(self.user_management)
+
+
+
+# ==========================================
+# FILE: manager_panel\key_manager.py
+# ==========================================
+
+
+
+# ==========================================
+# FILE: manager_panel\stats_widget.py
+# ==========================================
+
+from PyQt5.QtWidgets import QWidget, QGridLayout, QLabel, QFrame
+
+
+class StatCard(QFrame):
+
+    def __init__(self, title, value):
+        super().__init__()
+
+        self.setStyleSheet("""
+            QFrame {
+                background:#141824;
+                border-radius:12px;
+                color:white;
+            }
+        """)
+
+        layout = QGridLayout(self)
+
+        lbl_title = QLabel(title)
+        lbl_value = QLabel(str(value))
+
+        lbl_title.setStyleSheet("font-size:14px; color:#bbbbbb;")
+        lbl_value.setStyleSheet("font-size:28px;")
+
+        layout.addWidget(lbl_title, 0, 0)
+        layout.addWidget(lbl_value, 1, 0)
+
+
+class StatsWidget(QWidget):
+
+    def __init__(self):
+        super().__init__()
+
+        layout = QGridLayout(self)
+
+        # فعلاً عددها ثابت هستند — بعداً از دیتابیس می‌خوانیم
+        cards = [
+            ("تعداد کاربران", 12),
+            ("تعداد اسناد", 248),
+            ("درخواست‌ها", 7),
+            ("فعالیت امروز", 19)
+        ]
+
+        row = col = 0
+        for title, value in cards:
+            card = StatCard(title, value)
+            layout.addWidget(card, row, col)
+            col += 1
+            if col == 2:
+                col = 0
+                row += 1
+
+
+# ==========================================
+# FILE: manager_panel\user_management.py
+# ==========================================
+
+from PyQt5.QtWidgets import (
+    QWidget, QVBoxLayout, QLabel,
+    QTableWidget, QTableWidgetItem
+)
+
+
+class UserManagementWidget(QWidget):
+
+    def __init__(self):
+        super().__init__()
+
+        layout = QVBoxLayout(self)
+
+        lbl = QLabel("مدیریت کاربران")
+        lbl.setStyleSheet("font-size:18px;")
+
+        self.table = QTableWidget()
+        self.table.setColumnCount(4)
+        self.table.setHorizontalHeaderLabels(
+            ["ID", "نام کاربری", "نقش", "وضعیت"]
+        )
+
+        # داده تست
+        users = [
+            (1, "admin", "manager", "فعال"),
+            (2, "ali", "user", "فعال"),
+            (3, "sara", "staff", "غیرفعال"),
+        ]
+
+        self.table.setRowCount(len(users))
+
+        for row, user in enumerate(users):
+            for col, val in enumerate(user):
+                self.table.setItem(row, col, QTableWidgetItem(str(val)))
+
+        layout.addWidget(lbl)
+        layout.addWidget(self.table)
+
+
+# ==========================================
+# FILE: ocr_engine\field_extractor.py
+# ==========================================
+
+import re
+import json
+
+
+def extract_fields(text):
+    fields = {}
+
+    # نام (هر دو کلمه پشت‌سرهم که حرف دارند)
+    name_match = re.search(r"(نام|Name)\s*[:\-]?\s*([آ-یA-Za-z]+\s+[آ-یA-Za-z]+)", text)
+    if name_match:
+        fields["name"] = name_match.group(2)
+
+    # کد ملی (۱۰ رقم که با صفر شروع نمی‌شود)
+    national_id = re.search(r"\b([1-9]\d{9})\b", text)
+    if national_id:
+        fields["national_id"] = national_id.group(1)
+
+    # تاریخ (فرمت‌های 1402/01/15 یا ۱۴۰۲-۰۲-۲۲)
+    date_match = re.search(r"\b(13|14)\d{2}[\/\-\.]\d{1,2}[\/\-\.]\d{1,2}\b", text)
+    if date_match:
+        fields["date"] = date_match.group(0)
+
+    # شماره تماس
+    phone = re.search(r"\b09\d{9}\b", text)
+    if phone:
+        fields["phone"] = phone.group(0)
+
+    # شماره پرونده
+    case_id = re.search(r"(شماره پرونده|Case ID)\s*[:\-]?\s*(\d+)", text)
+    if case_id:
+        fields["case_id"] = case_id.group(2)
+
+    return json.dumps(fields, ensure_ascii=False)
+
+
+# ==========================================
+# FILE: ocr_engine\ocr_reader.py
+# ==========================================
+
+import cv2
+import numpy as np
+
+# تلاش برای لود کردن EasyOCR. اگر اینترنت قطع باشد یا مدل ها دانلود نشوند،
+# برنامه کرش نمی کند و فقط OCR شبیه سازی می شود.
+HAS_OCR = False
+reader = None
+
+try:
+    import easyocr
+    # غیرفعال کردن موقت لودر برای جلوگیری از هنگ کردن برنامه در زمان قطعی اینترنت
+    # reader = easyocr.Reader(['fa', 'en'], gpu=False) 
+    # HAS_OCR = True
+except Exception:
+    pass
+
+def preprocess_image(image_path):
+    try:
+        image = cv2.imread(image_path)
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        blur = cv2.GaussianBlur(gray, (5,5), 0)
+        thresh = cv2.adaptiveThreshold(
+            blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2
+        )
+        return thresh
+    except:
+        return None
+
+def read_text(image_path):
+    if not HAS_OCR or reader is None:
+        # شبیه سازی فرآیند OCR برای زمانی که اینترنت محدود است و امکان دانلود مدل نیست
+        mock_text = """
+        نام: کاربر تست
+        کد ملی: 1234567890
+        شماره پرونده: 8520
+        تاریخ: 1402/05/12
+        شماره تماس: 09123456789
+        (توجه: به دلیل محدودیت اینترنت، این متن توسط سیستم شبیه‌ساز تولید شده است.)
+        """
+        return mock_text.strip()
+
+    processed = preprocess_image(image_path)
+    result = reader.readtext(processed)
+    texts = [detection[1] for detection in result]
+    return "\n".join(texts)
+
+def read_with_boxes(image_path):
+    if not HAS_OCR or reader is None:
+        return [{"text": "متن تستی", "confidence": 0.99, "box": [[0,0],[10,0],[10,10],[0,10]]}]
+
+    image = cv2.imread(image_path)
+    result = reader.readtext(image)
+
+    data = []
+    for box, text, conf in result:
+        data.append({
+            "text": text,
+            "confidence": float(conf),
+            "box": box
+        })
+    return data
+
+
+# ==========================================
+# FILE: ocr_engine\signature_extractor.py
+# ==========================================
+
+import cv2
+import numpy as np
+from pathlib import Path
+import uuid
+
+
+def extract_signature(image_path, save_folder):
+    image = cv2.imread(image_path)
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+    blur = cv2.GaussianBlur(gray, (5, 5), 0)
+
+    thresh = cv2.adaptiveThreshold(
+        blur,
+        255,
+        cv2.ADAPTIVE_THRESH_MEAN_C,
+        cv2.THRESH_BINARY_INV,
+        31,
+        15
+    )
+
+    kernel = np.ones((5, 5), np.uint8)
+    morphed = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel, iterations=2)
+
+    contours, _ = cv2.findContours(morphed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    signature_contours = []
+    for cnt in contours:
+        x, y, w, h = cv2.boundingRect(cnt)
+        area = w * h
+        if area > 5000 and 0.1 < h / w < 3:
+            signature_contours.append((x, y, w, h))
+
+    if not signature_contours:
+        return None
+
+    signature_contours = sorted(signature_contours, key=lambda b: b[2] * b[3], reverse=True)
+    x, y, w, h = signature_contours[0]
+
+    cropped = image[y:y+h, x:x+w]
+
+    save_folder = Path(save_folder)
+    save_folder.mkdir(parents=True, exist_ok=True)
+
+    filename = f"signature_{uuid.uuid4().hex}.png"
+    save_path = save_folder / filename
+
+    cv2.imwrite(str(save_path), cropped)
+
+    return str(save_path)
+
+
+# ==========================================
+# FILE: ocr_engine\tempCodeRunnerFile.py
+# ==========================================
+
+image_path = r"C:\E\archive_system\ocr_engine\test.png"
+
+img = cv2.imread(image_path)
+
+
+# ==========================================
+# FILE: ocr_engine\test_ocr.py
+# ==========================================
+
+import pytesseract
+import cv2
+
+# مسیر نصب Tesseract را اینجا دقیقاً مشخص کنید
+pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+
+# حالا بقیه کدهای شما (پردازش تصویر و غیره)
+image_path = r"C:\E\archive_system\ocr_engine\test.png"
+img = cv2.imread(image_path)
+gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+_, thresh = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY)
+
+text = pytesseract.image_to_string(thresh, lang="fas")
+print("OCR RESULT:")
+print(text)
+
+
+
+
+# ==========================================
+# FILE: staff_panel\dashboard.py
+# ==========================================
+
+from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLabel, QPushButton
+
+from staff_panel.review_documents import ReviewDocuments
+from staff_panel.ticket_manager import TicketManager
+
+
+class StaffDashboard(QWidget):
+
+    def __init__(self, user_data):
+        super().__init__()
+
+        self.user_data = user_data
+
+        self.review_window = None
+        self.ticket_window = None
+
+        self.init_ui()
+
+    def init_ui(self):
+
+        layout = QVBoxLayout()
+
+        layout.addWidget(QLabel("پنل کارمند"))
+        layout.addWidget(QLabel(f"کاربر: {self.user_data.get('full_name')}"))
+
+        # بررسی اسناد
+        btn_review = QPushButton("📂 بررسی اسناد")
+        btn_review.clicked.connect(self.open_review)
+
+        # مدیریت تیکت‌ها
+        btn_tickets = QPushButton("🎫 مدیریت تیکت‌ها")
+        btn_tickets.clicked.connect(self.open_tickets)
+
+        # خروج
+        btn_logout = QPushButton("❌ خروج")
+        btn_logout.clicked.connect(self.close)
+
+        layout.addWidget(btn_review)
+        layout.addWidget(btn_tickets)
+        layout.addWidget(btn_logout)
+
+        self.setLayout(layout)
+        self.setWindowTitle("پنل کارمند")
+        self.resize(420, 220)
+
+    # -------------------------
+
+    def open_review(self):
+
+        if self.review_window is None:
+            self.review_window = ReviewDocuments()
+
+        self.review_window.show()
+
+    # -------------------------
+
+    def open_tickets(self):
+
+        if self.ticket_window is None:
+            self.ticket_window = TicketManager(self.user_data)
+
+        self.ticket_window.show()
+
+
+# ==========================================
+# FILE: staff_panel\review_documents.py
+# ==========================================
+
+import os
+import subprocess
+import json
+
+from PyQt5.QtWidgets import (
+    QWidget,
+    QVBoxLayout,
+    QPushButton,
+    QListWidget,
+    QMessageBox,
+    QTextEdit,
+    QLabel
+)
+
+from database.db import get_connection
+from ocr_engine.ocr_reader import read_text
+from ocr_engine.field_extractor import extract_fields
+
+
+class ReviewDocuments(QWidget):
+
+    def __init__(self):
+        super().__init__()
+
+        self.setWindowTitle("بررسی اسناد")
+        self.setMinimumSize(600, 500)
+
+        layout = QVBoxLayout()
+
+        self.doc_list = QListWidget()
+
+        self.ocr_text_view = QTextEdit()
+        self.ocr_text_view.setReadOnly(True)
+
+        self.fields_view = QTextEdit()
+        self.fields_view.setReadOnly(True)
+
+        load_btn = QPushButton("بارگذاری اسناد")
+        load_btn.clicked.connect(self.load_documents)
+
+        open_btn = QPushButton("باز کردن فایل")
+        open_btn.clicked.connect(self.open_file)
+
+        ocr_btn = QPushButton("اجرای OCR")
+        ocr_btn.clicked.connect(self.run_ocr)
+
+        approve_btn = QPushButton("تایید سند")
+        approve_btn.clicked.connect(self.approve_document)
+
+        reject_btn = QPushButton("رد سند")
+        reject_btn.clicked.connect(self.reject_document)
+
+        layout.addWidget(QLabel("لیست اسناد در انتظار بررسی"))
+        layout.addWidget(self.doc_list)
+
+        layout.addWidget(load_btn)
+        layout.addWidget(open_btn)
+        layout.addWidget(ocr_btn)
+
+        layout.addWidget(QLabel("متن استخراج شده (OCR)"))
+        layout.addWidget(self.ocr_text_view)
+
+        layout.addWidget(QLabel("اطلاعات استخراج شده"))
+        layout.addWidget(self.fields_view)
+
+        layout.addWidget(approve_btn)
+        layout.addWidget(reject_btn)
+
+        self.setLayout(layout)
+
+        self.documents = []
+
+    def load_documents(self):
+
+        try:
+            conn = get_connection()
+            cursor = conn.cursor()
+
+            cursor.execute("""
+            SELECT id, title, file_path
+            FROM documents
+            WHERE status='pending'
+            """)
+
+            self.documents = cursor.fetchall()
+
+            self.doc_list.clear()
+
+            for doc in self.documents:
+                self.doc_list.addItem(f"{doc['id']} - {doc['title']}")
+
+            conn.close()
+
+        except Exception as e:
+            QMessageBox.critical(self, "خطا", str(e))
+
+    def get_selected_doc(self):
+
+        index = self.doc_list.currentRow()
+
+        if index == -1:
+            QMessageBox.warning(self, "خطا", "سندی انتخاب نشده")
+            return None
+
+        return self.documents[index]
+
+    def open_file(self):
+
+        doc = self.get_selected_doc()
+
+        if not doc:
+            return
+
+        path = doc["file_path"]
+
+        try:
+
+            if not os.path.exists(path):
+                QMessageBox.warning(self, "خطا", "فایل پیدا نشد")
+                return
+
+            if os.name == "nt":
+                os.startfile(path)
+            else:
+                subprocess.call(["xdg-open", path])
+
+        except Exception as e:
+            QMessageBox.critical(self, "خطا", str(e))
+
+    def run_ocr(self):
+
+        doc = self.get_selected_doc()
+
+        if not doc:
+            return
+
+        path = doc["file_path"]
+
+        try:
+
+            text = read_text(path)
+
+            extracted_json = extract_fields(text)
+
+            try:
+                fields = json.loads(extracted_json)
+                pretty_fields = json.dumps(fields, indent=4, ensure_ascii=False)
+            except:
+                pretty_fields = extracted_json
+
+            self.ocr_text_view.setText(text)
+            self.fields_view.setText(pretty_fields)
+
+            conn = get_connection()
+            cursor = conn.cursor()
+
+            cursor.execute("""
+            UPDATE documents
+            SET ocr_text=?, extracted_json=?
+            WHERE id=?
+            """, (text, extracted_json, doc["id"]))
+
+            conn.commit()
+            conn.close()
+
+            QMessageBox.information(self, "OCR", "متن و اطلاعات استخراج شد")
+
+        except Exception as e:
+            QMessageBox.critical(self, "خطا", str(e))
+
+    def approve_document(self):
+
+        doc = self.get_selected_doc()
+
+        if not doc:
+            return
+
+        try:
+
+            conn = get_connection()
+            cursor = conn.cursor()
+
+            cursor.execute("""
+            UPDATE documents
+            SET status='approved'
+            WHERE id=?
+            """, (doc["id"],))
+
+            conn.commit()
+            conn.close()
+
+            QMessageBox.information(self, "موفق", "سند تایید شد")
+
+            self.ocr_text_view.clear()
+            self.fields_view.clear()
+
+            self.load_documents()
+
+        except Exception as e:
+            QMessageBox.critical(self, "خطا", str(e))
+
+    def reject_document(self):
+
+        doc = self.get_selected_doc()
+
+        if not doc:
+            return
+
+        try:
+
+            conn = get_connection()
+            cursor = conn.cursor()
+
+            cursor.execute("""
+            UPDATE documents
+            SET status='rejected'
+            WHERE id=?
+            """, (doc["id"],))
+
+            conn.commit()
+            conn.close()
+
+            QMessageBox.information(self, "انجام شد", "سند رد شد")
+
+            self.ocr_text_view.clear()
+            self.fields_view.clear()
+
+            self.load_documents()
+
+        except Exception as e:
+            QMessageBox.critical(self, "خطا", str(e))
+
+
+# ==========================================
+# FILE: staff_panel\ticket_manager.py
+# ==========================================
+
+from PyQt5.QtWidgets import (
+    QWidget, QVBoxLayout, QLabel,
+    QListWidget, QTextEdit, QPushButton,
+    QMessageBox
+)
+
+from tickets.ticket_service import get_staff_tickets, reply_ticket
+
+
+class TicketManager(QWidget):
+
+    def __init__(self, staff_data):
+        super().__init__()
+
+        self.staff_id = staff_data["id"]
+
+        self.setWindowTitle("مدیریت تیکت‌ها")
+        self.setMinimumSize(600, 500)
+
+        layout = QVBoxLayout()
+
+        self.ticket_list = QListWidget()
+
+        self.message_box = QTextEdit()
+        self.message_box.setReadOnly(True)
+
+        self.response_box = QTextEdit()
+        self.response_box.setPlaceholderText("پاسخ خود را بنویسید...")
+
+        btn_reload = QPushButton("🔄 بروزرسانی")
+        btn_reload.clicked.connect(self.load_tickets)
+
+        btn_reply = QPushButton("✅ ارسال پاسخ")
+        btn_reply.clicked.connect(self.send_reply)
+
+        layout.addWidget(QLabel("تیکت‌های کاربران"))
+        layout.addWidget(self.ticket_list)
+
+        layout.addWidget(QLabel("پیام کاربر"))
+        layout.addWidget(self.message_box)
+
+        layout.addWidget(QLabel("پاسخ شما"))
+        layout.addWidget(self.response_box)
+
+        layout.addWidget(btn_reload)
+        layout.addWidget(btn_reply)
+
+        self.setLayout(layout)
+
+        self.tickets = []
+
+        self.ticket_list.currentRowChanged.connect(self.show_ticket)
+
+        self.load_tickets()
+
+    # -----------------------------
+
+    def load_tickets(self):
+
+        self.tickets = get_staff_tickets()
+
+        self.ticket_list.clear()
+
+        for t in self.tickets:
+
+            text = f"#{t['id']} | {t['doc_title']} | کاربر: {t['user_name']}"
+
+            self.ticket_list.addItem(text)
+
+    # -----------------------------
+
+    def show_ticket(self, index):
+
+        if index == -1:
+            return
+
+        ticket = self.tickets[index]
+
+        self.message_box.setText(ticket["message"])
+
+        if ticket["response"]:
+            self.response_box.setText(ticket["response"])
+        else:
+            self.response_box.clear()
+
+    # -----------------------------
+
+    def send_reply(self):
+
+        index = self.ticket_list.currentRow()
+
+        if index == -1:
+            QMessageBox.warning(self, "خطا", "یک تیکت انتخاب کنید")
+            return
+
+        response = self.response_box.toPlainText().strip()
+
+        if not response:
+            QMessageBox.warning(self, "خطا", "پاسخ خالی است")
+            return
+
+        ticket = self.tickets[index]
+
+        try:
+
+            reply_ticket(
+                ticket_id=ticket["id"],
+                staff_id=self.staff_id,
+                response=response
+            )
+
+            QMessageBox.information(
+                self,
+                "ثبت شد",
+                "پاسخ ارسال شد"
+            )
+
+            self.load_tickets()
+
+        except Exception as e:
+
+            QMessageBox.critical(
+                self,
+                "خطا",
+                str(e)
+            )
+
+
+# ==========================================
+# FILE: storage\archive.py
+# ==========================================
+
+import os
+import sqlite3
+from pathlib import Path
+
+# مسیر دیتابیس
+DB_PATH = Path(__file__).resolve().parent.parent / 'database' / 'archive.db'
+
+class ArchiveService:
+    def __init__(self):
+        self.connection = sqlite3.connect(DB_PATH)
+        self.cursor = self.connection.cursor()
+        
+    def save_document(self, document_id, document_path, user_id):
+        """ذخیره‌سازی سند."""
+        try:
+            self.cursor.execute("""
+                INSERT INTO documents (id, path, user_id)
+                VALUES (?, ?, ?)
+            """, (document_id, document_path, user_id))
+            self.connection.commit()
+            return True
+        except Exception as e:
+            print(f"Error saving document: {e}")
+            return False
+
+    def retrieve_document(self, document_id):
+        """بازگرداندن سند بر اساس ID."""
+        self.cursor.execute("SELECT path FROM documents WHERE id = ?", (document_id,))
+        return self.cursor.fetchone()
+
+    def close(self):
+        """بستن اتصال به دیتابیس."""
+        self.cursor.close()
+        self.connection.close()
+
+
+# ==========================================
+# FILE: storage\file_manager.py
+# ==========================================
+
+import os
+import shutil
+from datetime import datetime
+from pathlib import Path
+
+# مسیر داینامیک ذخیره سازی فایل ها
+BASE_DIR = Path(os.path.abspath(os.path.dirname(__file__))).parent
+BASE_PATH = BASE_DIR / "archive_storage" / "users"
+
+def save_user_file(user_id, source_path):
+    user_folder = BASE_PATH / str(user_id)
+
+    # ساخت خودکار پوشه در صورت عدم وجود
+    os.makedirs(user_folder, exist_ok=True)
+
+    filename = os.path.basename(source_path)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    new_name = f"{timestamp}_{filename}"
+    
+    dest_path = os.path.join(user_folder, new_name)
+    shutil.copy(source_path, dest_path)
+
+    return dest_path
+
+
+# ==========================================
+# FILE: storage\headers.py
+# ==========================================
+
+from utils.id_generator import generate_header
+from database.db import get_connection
+
+
+def create_header(document_id):
+    header = generate_header()
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "UPDATE documents SET header_code = ? WHERE id = ?",
+        (header, document_id)
+    )
+
+    conn.commit()
+    conn.close()
+    return header
+
+
+def get_header(document_id):
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "SELECT header_code FROM documents WHERE id = ?",
+        (document_id,)
+    )
+
+    row = cursor.fetchone()
+    conn.close()
+
+    return row["header_code"] if row else None
+
+
+# ==========================================
+# FILE: tickets\ticket_service.py
+# ==========================================
+
+from database.db import get_connection
+
+
+def create_ticket(user_id, document_id, message):
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        INSERT INTO tickets (user_id, document_id, message, status)
+        VALUES (?, ?, ?, 'open')
+    """, (user_id, document_id, message))
+
+    conn.commit()
+    conn.close()
+
+
+def get_user_tickets(user_id):
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT *
+        FROM tickets
+        WHERE user_id=?
+        ORDER BY created_at DESC
+    """, (user_id,))
+
+    rows = cursor.fetchall()
+    conn.close()
+
+    return rows
+
+
+def get_staff_tickets():
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT t.*, d.title as doc_title, u.full_name as user_name
+        FROM tickets t
+        JOIN documents d ON t.document_id = d.id
+        JOIN users u ON t.user_id = u.id
+        WHERE t.status='open'
+        ORDER BY t.created_at ASC
+    """)
+
+    rows = cursor.fetchall()
+    conn.close()
+
+    return rows
+
+
+def reply_ticket(ticket_id, staff_id, response):
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        UPDATE tickets
+        SET staff_id=?, response=?, status='answered'
+        WHERE id=?
+    """, (staff_id, response, ticket_id))
+
+    conn.commit()
+    conn.close()
+
+
+# ==========================================
+# FILE: user_panel\dashboard.py
+# ==========================================
+
+from PyQt5.QtWidgets import (
+    QWidget,
+    QLabel,
+    QVBoxLayout,
+    QPushButton,
+    QMessageBox
+)
+from PyQt5.QtCore import Qt
+
+from user_panel.upload_form import UploadForm
+from user_panel.user_documents import UserDocuments
+from user_panel.ticket_history import TicketHistory
+
+
+class UserDashboard(QWidget):
+    """
+    داشبورد کاربر عادی
+    """
+
+    def __init__(self, user_data):
+        super().__init__()
+
+        self.user_data = user_data
+
+        # پنجره‌ها
+        self.upload_window = None
+        self.docs_window = None
+        self.ticket_window = None
+
+        self.init_ui()
+
+    # -------------------------------------------------
+    # ساخت رابط کاربری
+    # -------------------------------------------------
+    def init_ui(self):
+
+        layout = QVBoxLayout()
+
+        # متن خوش‌آمدگویی
+        welcome_label = QLabel(f"خوش آمدی {self.user_data.get('full_name')}")
+        welcome_label.setAlignment(Qt.AlignCenter)
+
+        role_label = QLabel("نقش شما: کاربر عادی")
+        role_label.setAlignment(Qt.AlignCenter)
+
+        layout.addWidget(welcome_label)
+        layout.addWidget(role_label)
+
+        # دکمه ثبت سند
+        btn_upload = QPushButton("📄 ثبت سند جدید")
+        btn_upload.clicked.connect(self.open_upload_form)
+        layout.addWidget(btn_upload)
+
+        # دکمه اسناد من
+        btn_docs = QPushButton("🗂️ اسناد من")
+        btn_docs.clicked.connect(self.open_my_documents)
+        layout.addWidget(btn_docs)
+
+        # دکمه تیکت‌ها
+        btn_tickets = QPushButton("🎫 تیکت‌های من")
+        btn_tickets.clicked.connect(self.open_tickets)
+        layout.addWidget(btn_tickets)
+
+        # دکمه خروج
+        btn_logout = QPushButton("❌ خروج")
+        btn_logout.clicked.connect(self.logout)
+        layout.addWidget(btn_logout)
+
+        self.setLayout(layout)
+        self.setWindowTitle("پنل کاربری")
+        self.resize(400, 250)
+
+    # -------------------------------------------------
+    # باز کردن فرم آپلود
+    # -------------------------------------------------
+    def open_upload_form(self):
+
+        if self.upload_window is None:
+            self.upload_window = UploadForm(self.user_data)
+
+        self.upload_window.show()
+
+    # -------------------------------------------------
+    # باز کردن اسناد کاربر
+    # -------------------------------------------------
+    def open_my_documents(self):
+
+        if self.docs_window is None:
+            self.docs_window = UserDocuments(self.user_data)
+
+        self.docs_window.show()
+
+    # -------------------------------------------------
+    # باز کردن تیکت‌ها
+    # -------------------------------------------------
+    def open_tickets(self):
+
+        if self.ticket_window is None:
+            self.ticket_window = TicketHistory(self.user_data)
+
+        self.ticket_window.show()
+
+    # -------------------------------------------------
+    # خروج
+    # -------------------------------------------------
+    def logout(self):
+
+        QMessageBox.information(self, "خروج", "با موفقیت خارج شدید.")
+        self.close()
+
+
+# ==========================================
+# FILE: user_panel\ticket_history.py
+# ==========================================
+
+from PyQt5.QtWidgets import (
+    QWidget,
+    QVBoxLayout,
+    QLabel,
+    QListWidget,
+    QTextEdit
+)
+
+from tickets.ticket_service import get_user_tickets
+
+
+class TicketHistory(QWidget):
+
+    def __init__(self, user_data):
+        super().__init__()
+
+        self.user_id = user_data["id"]
+
+        self.setWindowTitle("تاریخچه تیکت‌های من")
+        self.resize(600, 500)
+
+        layout = QVBoxLayout()
+
+        # لیست تیکت‌ها
+        self.ticket_list = QListWidget()
+
+        # متن پیام کاربر
+        self.message_box = QTextEdit()
+        self.message_box.setReadOnly(True)
+
+        # پاسخ کارمند
+        self.response_box = QTextEdit()
+        self.response_box.setReadOnly(True)
+
+        layout.addWidget(QLabel("تیکت‌های شما"))
+        layout.addWidget(self.ticket_list)
+
+        layout.addWidget(QLabel("پیام شما"))
+        layout.addWidget(self.message_box)
+
+        layout.addWidget(QLabel("پاسخ کارمند"))
+        layout.addWidget(self.response_box)
+
+        self.setLayout(layout)
+
+        self.tickets = []
+
+        self.ticket_list.currentRowChanged.connect(self.show_ticket)
+
+        self.load_tickets()
+
+    # -------------------------
+
+    def load_tickets(self):
+
+        self.tickets = get_user_tickets(self.user_id)
+
+        self.ticket_list.clear()
+
+        for t in self.tickets:
+            status = t["status"]
+            text = f"#{t['id']} | وضعیت: {status}"
+            self.ticket_list.addItem(text)
+
+    # -------------------------
+
+    def show_ticket(self, index):
+
+        if index == -1:
+            return
+
+        ticket = self.tickets[index]
+
+        self.message_box.setText(ticket["message"])
+
+        if ticket["response"]:
+            self.response_box.setText(ticket["response"])
+        else:
+            self.response_box.setText("هنوز پاسخی ثبت نشده است")
+
+
+# ==========================================
+# FILE: user_panel\ticket_system.py
+# ==========================================
+
+from database.db import get_connection
+
+
+def create_ticket(document_id, user_id, message):
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        INSERT INTO tickets (document_id, user_id, message, status)
+        VALUES (?, ?, ?, 'open')
+    """, (document_id, user_id, message))
+
+    conn.commit()
+    conn.close()
+    return True
+
+
+def get_user_tickets(user_id):
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT * FROM tickets
+        WHERE user_id = ?
+        ORDER BY created_at DESC
+    """, (user_id,))
+
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def get_staff_tickets():
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT t.*, d.title AS doc_title, u.full_name AS user_name
+        FROM tickets t
+        JOIN documents d ON t.document_id = d.id
+        JOIN users u ON t.user_id = u.id
+        WHERE t.status = 'open'
+        ORDER BY t.created_at ASC
+    """)
+
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def reply_ticket(ticket_id, staff_id, response):
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        UPDATE tickets
+        SET staff_id = ?, response = ?, status = 'answered'
+        WHERE id = ?
+    """, (staff_id, response, ticket_id))
+
+    conn.commit()
+    conn.close()
+    return True
+
+
+# ==========================================
+# FILE: user_panel\upload_form.py
+# ==========================================
+
+import os
+from PyQt5.QtWidgets import (
+    QWidget, QVBoxLayout, QLabel, QLineEdit,
+    QPushButton, QFileDialog, QTextEdit, QMessageBox
+)
+
+from database.db import get_connection
+from storage.file_manager import save_user_file
+
+
+class UploadForm(QWidget):
+    def __init__(self, user_data):
+        super().__init__()
+
+        self.user_id = user_data["id"]
+        self.file_path = None
+
+        self.setWindowTitle("ثبت سند جدید")
+        self.setMinimumWidth(400)
+
+        layout = QVBoxLayout()
+
+        self.title_input = QLineEdit()
+        self.title_input.setPlaceholderText("عنوان سند")
+
+        self.desc_input = QTextEdit()
+        self.desc_input.setPlaceholderText("توضیحات")
+
+        self.file_label = QLabel("فایلی انتخاب نشده")
+
+        select_btn = QPushButton("انتخاب فایل")
+        select_btn.clicked.connect(self.select_file)
+
+        upload_btn = QPushButton("ثبت سند")
+        upload_btn.clicked.connect(self.upload_document)
+
+        layout.addWidget(QLabel("عنوان"))
+        layout.addWidget(self.title_input)
+
+        layout.addWidget(QLabel("توضیحات"))
+        layout.addWidget(self.desc_input)
+
+        layout.addWidget(self.file_label)
+        layout.addWidget(select_btn)
+
+        layout.addWidget(upload_btn)
+
+        self.setLayout(layout)
+
+    def select_file(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "انتخاب فایل",
+            "",
+            "Documents (*.pdf *.png *.jpg *.jpeg)"
+        )
+
+        if file_path:
+            self.file_path = file_path
+            self.file_label.setText(os.path.basename(file_path))
+
+    def upload_document(self):
+        title = self.title_input.text()
+        description = self.desc_input.toPlainText()
+
+        if not self.file_path:
+            QMessageBox.warning(self, "خطا", "لطفاً فایل انتخاب کنید")
+            return
+
+        try:
+            saved_path = save_user_file(self.user_id, self.file_path)
+
+            conn = get_connection()
+            cursor = conn.cursor()
+
+            cursor.execute("""
+                INSERT INTO documents
+                (user_id, title, description, file_path, status)
+                VALUES (?, ?, ?, ?, ?)
+            """, (
+                self.user_id,
+                title,
+                description,
+                saved_path,
+                "pending"
+            ))
+
+            conn.commit()
+            conn.close()
+
+            QMessageBox.information(self, "موفق", "سند ثبت شد")
+
+            self.close()
+
+        except Exception as e:
+            QMessageBox.critical(self, "خطا", str(e))
+
+
+# ==========================================
+# FILE: user_panel\user_documents.py
+# ==========================================
+
+import os
+import subprocess
+
+from PyQt5.QtWidgets import (
+    QWidget, QVBoxLayout, QLabel, QListWidget,
+    QPushButton, QMessageBox, QInputDialog
+)
+
+from database.db import get_connection
+from tickets.ticket_service import create_ticket
+
+
+class UserDocuments(QWidget):
+
+    def __init__(self, user_data):
+        super().__init__()
+
+        self.user_id = user_data["id"]
+
+        self.setWindowTitle("اسناد من")
+        self.setMinimumSize(500, 400)
+
+        layout = QVBoxLayout()
+
+        self.list = QListWidget()
+
+        btn_reload = QPushButton("🔄 بروزرسانی")
+        btn_reload.clicked.connect(self.load_docs)
+
+        btn_open = QPushButton("📂 باز کردن فایل")
+        btn_open.clicked.connect(self.open_file)
+
+        btn_ticket = QPushButton("🎫 ارسال تیکت")
+        btn_ticket.clicked.connect(self.create_ticket_for_doc)
+
+        layout.addWidget(QLabel("لیست اسناد شما"))
+        layout.addWidget(self.list)
+        layout.addWidget(btn_reload)
+        layout.addWidget(btn_open)
+        layout.addWidget(btn_ticket)
+
+        self.setLayout(layout)
+
+        self.documents = []
+        self.load_docs()
+
+    # --------------------------------
+
+    def load_docs(self):
+
+        conn = get_connection()
+        cur = conn.cursor()
+
+        cur.execute("""
+            SELECT id, title, status, file_path
+            FROM documents
+            WHERE user_id = ?
+            ORDER BY created_at DESC
+        """, (self.user_id,))
+
+        self.documents = cur.fetchall()
+
+        self.list.clear()
+
+        for d in self.documents:
+            self.list.addItem(
+                f"{d['id']} | {d['title']} | وضعیت: {d['status']}"
+            )
+
+        conn.close()
+
+    # --------------------------------
+
+    def get_selected_doc(self):
+
+        index = self.list.currentRow()
+
+        if index == -1:
+            QMessageBox.warning(self, "خطا", "هیچ سندی انتخاب نشده")
+            return None
+
+        return self.documents[index]
+
+    # --------------------------------
+
+    def open_file(self):
+
+        doc = self.get_selected_doc()
+        if not doc:
+            return
+
+        path = doc["file_path"]
+
+        if not os.path.exists(path):
+            QMessageBox.warning(self, "خطا", "فایل پیدا نشد")
+            return
+
+        try:
+            if os.name == "nt":
+                os.startfile(path)
+            else:
+                subprocess.call(["xdg-open", path])
+
+        except Exception as e:
+            QMessageBox.critical(self, "خطا", str(e))
+
+    # --------------------------------
+
+    def create_ticket_for_doc(self):
+
+        doc = self.get_selected_doc()
+        if not doc:
+            return
+
+        text, ok = QInputDialog.getMultiLineText(
+            self,
+            "ارسال تیکت",
+            "مشکل خود را بنویسید:"
+        )
+
+        if not ok or text.strip() == "":
+            return
+
+        try:
+
+            create_ticket(
+                document_id=doc["id"],
+                user_id=self.user_id,
+                message=text
+            )
+
+            QMessageBox.information(
+                self,
+                "ثبت شد",
+                "تیکت شما با موفقیت ارسال شد"
+            )
+
+        except Exception as e:
+            QMessageBox.critical(self, "خطا", str(e))
+
+
+# ==========================================
+# FILE: utils\helpers.py
+# ==========================================
+
+
+
+# ==========================================
+# FILE: utils\id_generator.py
+# ==========================================
+
+import uuid
+import datetime
+import random
+import string
+
+
+def generate_header():
+    date_part = datetime.datetime.now().strftime("%Y%m%d")
+    random_part = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
+    return f"HDR-{date_part}-{random_part}"
+
+
+def generate_archive_key():
+    key = uuid.uuid4().hex.upper()
+    return f"KEY-{key[:16]}"
+
+
+def generate_ticket_id():
+    date_part = datetime.datetime.now().strftime("%Y%m%d")
+    rand = ''.join(random.choices(string.digits, k=5))
+    return f"TCK-{date_part}-{rand}"
+
+
+# ==========================================
+# FILE: utils\security.py
+# ==========================================
+
+import hashlib
+import os
+
+
+def hash_password(password: str) -> str:
+
+    salt = os.urandom(32)
+    pwd_hash = hashlib.pbkdf2_hmac(
+        'sha256',
+        password.encode('utf-8'),
+        salt,
+        100000
+    )
+    return salt.hex() + pwd_hash.hex()
+
+
+def verify_password(password: str, stored_hash: str) -> bool:
+
+    salt = bytes.fromhex(stored_hash[:64])
+    stored_pwd_hash = stored_hash[64:]
+
+    pwd_hash = hashlib.pbkdf2_hmac(
+        'sha256',
+        password.encode('utf-8'),
+        salt,
+        100000
+    ).hex()
+
+    return pwd_hash == stored_pwd_hash
