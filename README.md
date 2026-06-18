@@ -209,7 +209,3 @@ python main.py
 
 **Erfan Mirzazadeh**
 
-Computer Engineering Student | Python Developer | AI Researcher
-
-GitHub:
-https://github.com/yourusername
